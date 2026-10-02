@@ -56,6 +56,12 @@ services:
     build: .
     image: novix-master:latest
     command: uvicorn app.master_service:app --host 0.0.0.0 --port 8000
+    environment:
+      LLM_MODE: ${LLM_MODE:-mock}
+      LLM_API_KEY: ${LLM_API_KEY:-}
+      LLM_API_URL: ${LLM_API_URL:-https://api.openai.com/v1/chat/completions}
+      LLM_MODEL: ${LLM_MODEL:-gpt-4o-mini}
+      LLM_TIMEOUT_SECONDS: ${LLM_TIMEOUT_SECONDS:-8}
     ports:
       - "8003:8000"
     networks:

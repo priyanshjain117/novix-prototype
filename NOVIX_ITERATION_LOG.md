@@ -2,6 +2,17 @@
 
 This document records the implementation approach used for each NOVIX project update. It is intentionally separate from the user-facing README and should be updated whenever a new feature or architectural iteration is implemented.
 
+## Ongoing update policy
+
+For every future implementation prompt, append a new iteration entry after the code change. Each entry must state:
+
+- The requested scope and resulting behavior.
+- Algorithms, rules, protocols, and implementation techniques used.
+- Components and files changed.
+- Validation performed, including known limitations or blocked checks.
+
+Documentation-only prompts may update this log without incrementing the product feature iteration count.
+
 ## Iteration 1 — Minimal service backend
 
 ### Scope
@@ -112,6 +123,35 @@ Added a simple browser dashboard served by the router service.
 - `dashboard/styles.css`
 - `dashboard/app.js`
 - Router static mount at `/dashboard/`
+
+## Iteration 6 — Master AI layer
+
+### Scope
+
+Added the final AI execution layer to the existing master service without adding a new service or changing the router/edge architecture.
+
+### Algorithms and techniques
+
+- Ordered master pipeline: input validation → maximum retry count of two retries → per-attempt timeout → LLM call → Pydantic output validation.
+- Deterministic `LLM_MODE=mock` response for offline demos.
+- Environment-configured `LLM_MODE=real` HTTP call to an OpenAI-compatible chat-completions endpoint.
+- API credentials supplied only through environment variables and excluded from logs.
+- Structured JSON logs containing request IDs, attempt numbers, modes, and failure types without logging prompt contents or secrets.
+- Lightweight edge behavior remains the existing mock execution path.
+
+### Components
+
+- `app/master_service.py`
+- `app/llm_service.py`
+- `docker-compose.yml`
+- `.env.example`
+- `README.md`
+
+### Validation
+
+- Mock mode is the Compose default and requires no API key.
+- Real mode validates the API key configuration, provider response shape, and non-empty output.
+- Compose build/start verification is performed as part of this iteration.
 
 ## Future iteration template
 
