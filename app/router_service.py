@@ -1,28 +1,227 @@
+import asyncio
+import json
+import logging
 import os
+import re
+from typing import Any, Dict, List, Optional
+from uuid import uuid4
 
-from fastapi import FastAPI
+import httpx
+from fastapi import FastAPI, HTTPException
 
 from .models import QueryRequest
 
 app = FastAPI(title="NOVIX Router Service", version="0.1.0")
+logger = logging.getLogger("novix.router")
 
+RESOURCE_TIMEOUT_SECONDS = float(os.getenv("RESOURCE_TIMEOUT_SECONDS", "1.5"))
 EDGE_URLS = [
-    url.strip()
+    url.strip().rstrip("/")
     for url in os.getenv(
         "EDGE_URLS", "http://localhost:8001,http://localhost:8002"
     ).split(",")
     if url.strip()
 ]
-MASTER_URL = os.getenv("MASTER_URL", "http://localhost:8002")
+MASTER_URL = os.getenv("MASTER_URL", "http://localhost:8002").rstrip("/")
+
+# These rules are intentionally transparent and easy to replace with a model later.
+HIGH_COMPLEXITY_TERMS = {
+    "architecture",
+    "architect",
+    "debug",
+    "debugging",
+    "design",
+    "optimize",
+    "optimization",
+    "research",
+    "strategy",
+    "tradeoff",
+    "multi-step",
+}
+MEDIUM_COMPLEXITY_TERMS = {
+    "analyze",
+    "analysis",
+    "compare",
+    "explain",
+    "extract",
+    "plan",
+    "summarize",
+    "transform",
+}
+PARALLEL_TERMS = {
+    "batch",
+    "compare",
+    "each",
+    "multiple",
+    "parallel",
+    "separately",
+}
+
+
+def _structured_log(level: int, event: str, **fields: Any) -> None:
+    logger.log(level, json.dumps({"event": event, **fields}, sort_keys=True))
+
+
+def _contains_term(query: str, terms: set[str]) -> bool:
+    return any(re.search(rf"\b{re.escape(term)}\b", query) for term in terms)
+
+
+def classify_query(query: str) -> tuple[str, bool, str]:
+    """Classify a query using deterministic length and keyword rules."""
+
+    normalized = query.lower().strip()
+    parallelizable = _contains_term(normalized, PARALLEL_TERMS) or bool(
+        re.search(r"\b(and|versus|vs)\b", normalized)
+    )
+
+    if len(normalized) > 240 or _contains_term(normalized, HIGH_COMPLEXITY_TERMS):
+        return "high", parallelizable, "high-complexity keyword or long query"
+    if len(normalized) > 80 or _contains_term(normalized, MEDIUM_COMPLEXITY_TERMS):
+        return "medium", parallelizable, "medium-complexity keyword or query length"
+    return "low", parallelizable, "short query without complexity keywords"
+
+
+async def _probe_resource(
+    client: httpx.AsyncClient, node: str, url: str
+) -> Dict[str, Any]:
+    try:
+        response = await client.get(f"{url}/resources")
+        response.raise_for_status()
+        data = response.json()
+        if not isinstance(data, dict):
+            raise ValueError("resource response must be a JSON object")
+        return {"node": node, "url": url, "available": True, "resources": data}
+    except (httpx.HTTPError, ValueError) as exc:
+        _structured_log(
+            logging.WARNING,
+            "resource_probe_failed",
+            node=node,
+            url=url,
+            error=type(exc).__name__,
+            detail=str(exc),
+        )
+        return {
+            "node": node,
+            "url": url,
+            "available": False,
+            "error": type(exc).__name__,
+        }
+
+
+def _load_score(resource: Dict[str, Any]) -> float:
+    """Lower is less loaded; use both CPU and memory where available."""
+
+    cpu = float(resource.get("cpu_percent", 100.0))
+    memory = resource.get("memory", {})
+    memory_percent = float(memory.get("percent", 100.0))
+    return (cpu + memory_percent) / 2
+
+
+@app.get("/health")
+def health() -> dict:
+    return {"status": "ok", "service": "router"}
 
 
 @app.post("/query")
-def query(request: QueryRequest) -> dict:
+async def query(request: QueryRequest) -> dict:
+    query_id = str(uuid4())
+    query_text = request.query.strip()
+    if not query_text:
+        raise HTTPException(status_code=422, detail="query must not be blank")
+
+    complexity, parallelizable, classification_reason = classify_query(query_text)
+    _structured_log(
+        logging.INFO,
+        "query_received",
+        query_id=query_id,
+        complexity=complexity,
+        parallelizable=parallelizable,
+    )
+
+    async with httpx.AsyncClient(timeout=RESOURCE_TIMEOUT_SECONDS) as client:
+        edge_results, master_result = await asyncio.gather(
+            asyncio.gather(
+                *[
+                    _probe_resource(client, f"edge-{index + 1:02d}", url)
+                    for index, url in enumerate(EDGE_URLS)
+                ]
+            ),
+            _probe_resource(client, "master", MASTER_URL),
+        )
+
+    available_edges = [node for node in edge_results if node["available"]]
+    master_available = master_result["available"]
+    unavailable_nodes = [
+        node["node"] for node in [*edge_results, master_result] if not node["available"]
+    ]
+    selected: List[Dict[str, Any]] = []
+    decision: Optional[str] = None
+    fallback: Optional[str] = None
+    reason = classification_reason
+
+    if complexity == "low" and available_edges:
+        selected = [
+            min(
+                available_edges,
+                key=lambda node: _load_score(node["resources"]),
+            )
+        ]
+        decision = "edge"
+        reason = "selected the least-loaded available edge"
+    elif complexity == "medium" and parallelizable and available_edges:
+        selected = available_edges
+        decision = "parallel-edge" if len(selected) > 1 else "edge"
+        if len(selected) == 1:
+            fallback = "parallel request degraded to one available edge"
+            reason = fallback
+        else:
+            reason = "selected all available edges for parallel execution"
+    elif master_available:
+        selected = [master_result]
+        decision = "master"
+        if complexity == "low" or (complexity == "medium" and parallelizable):
+            fallback = "no suitable edge capacity was available"
+            reason = fallback
+        else:
+            reason = "high-complexity or non-parallelizable query"
+
+    if not selected:
+        _structured_log(
+            logging.ERROR,
+            "routing_failed",
+            query_id=query_id,
+            complexity=complexity,
+            unavailable_nodes=unavailable_nodes,
+        )
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "error": "no available execution nodes",
+                "unavailable_nodes": unavailable_nodes,
+            },
+        )
+
+    targets = [node["url"] for node in selected]
+    selected_nodes = [node["node"] for node in selected]
+    _structured_log(
+        logging.INFO,
+        "query_routed",
+        query_id=query_id,
+        complexity=complexity,
+        parallelizable=parallelizable,
+        decision=decision,
+        selected_nodes=selected_nodes,
+        unavailable_nodes=unavailable_nodes,
+        fallback=fallback,
+    )
     return {
-        "task": request.task,
-        "decision": "edge",
-        "target": EDGE_URLS[0],
-        "available_edges": EDGE_URLS,
-        "master": MASTER_URL,
-        "reason": "Placeholder routing decision.",
+        "query_id": query_id,
+        "complexity": complexity,
+        "parallelizable": parallelizable,
+        "decision": decision,
+        "targets": targets,
+        "selected_nodes": selected_nodes,
+        "unavailable_nodes": unavailable_nodes,
+        "fallback": fallback,
+        "reason": reason,
     }

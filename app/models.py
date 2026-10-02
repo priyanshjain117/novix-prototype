@@ -15,5 +15,4 @@ class ExecuteRequest(BaseModel):
 class QueryRequest(BaseModel):
     """Minimal payload accepted by the router."""
 
-    task: str = Field(..., min_length=1, description="Task to route")
-    payload: Optional[Dict[str, Any]] = None
+    query: str = Field(..., min_length=1, description="Natural-language query to route")

@@ -4,9 +4,11 @@ Minimal Python + FastAPI services for the NOVIX prototype. The services are inte
 
 ## Services
 
-- Router: `POST /query` — returns a placeholder routing decision.
+- Router: `POST /query` — classifies queries and routes them using live node resources.
 - Edge: `GET /health`, `GET /resources`, `POST /execute` — reports host CPU and memory using `psutil`.
 - Master: `GET /health`, `GET /resources`, `POST /execute` — exposes coordination status and placeholder execution.
+
+The router uses deterministic keyword and query-length rules (no LLM) to classify requests as `low`, `medium`, or `high`. Low-complexity requests go to the least-loaded available edge, medium parallelizable requests use both edges when available, and high or non-parallelizable requests go to master. Every routing decision probes `/resources` first and reports unavailable nodes or degraded fallbacks.
 
 ## Setup
 
@@ -52,11 +54,11 @@ curl http://localhost:8001/resources
 
 curl -X POST http://localhost:8000/query \
   -H 'Content-Type: application/json' \
-  -d '{"task":"summarize","payload":{"text":"hello"}}'
+  -d '{"query":"summarize this short text"}'
 
 curl -X POST http://localhost:8001/execute \
   -H 'Content-Type: application/json' \
   -d '{"task":"summarize","payload":{"text":"hello"}}'
 ```
 
-No Docker, Kubernetes, Redis, Kafka, Celery, or cloud deployment configuration is included.
+No Kubernetes, Redis, Kafka, Celery, or cloud deployment configuration is included.
