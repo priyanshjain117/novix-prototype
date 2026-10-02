@@ -1,0 +1,71 @@
+services:
+  router:
+    build: .
+    image: novix-router:latest
+    command: uvicorn app.router_service:app --host 0.0.0.0 --port 8000
+    environment:
+      EDGE_URLS: http://edge-01:8000,http://edge-02:8000
+      MASTER_URL: http://master:8000
+    ports:
+      - "8000:8000"
+    networks:
+      - novix
+    depends_on:
+      edge-01:
+        condition: service_healthy
+      edge-02:
+        condition: service_healthy
+      master:
+        condition: service_healthy
+
+  edge-01:
+    build: .
+    image: novix-edge:latest
+    command: uvicorn app.edge_service:app --host 0.0.0.0 --port 8000
+    environment:
+      NODE_ID: edge-01
+    ports:
+      - "8001:8000"
+    networks:
+      - novix
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  edge-02:
+    image: novix-edge:latest
+    command: uvicorn app.edge_service:app --host 0.0.0.0 --port 8000
+    environment:
+      NODE_ID: edge-02
+    ports:
+      - "8002:8000"
+    networks:
+      - novix
+    depends_on:
+      edge-01:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+  master:
+    build: .
+    image: novix-master:latest
+    command: uvicorn app.master_service:app --host 0.0.0.0 --port 8000
+    ports:
+      - "8003:8000"
+    networks:
+      - novix
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/health')"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+networks:
+  novix:
+    name: novix-network
