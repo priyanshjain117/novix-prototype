@@ -184,6 +184,23 @@ async def _execute_subtask(
         }
 
 
+async def _execute_node(
+    client: httpx.AsyncClient,
+    node: Dict[str, Any],
+    query: str,
+    query_id: str,
+) -> Dict[str, Any]:
+    response = await client.post(
+        f"{node['url']}/execute",
+        json={"task": "query", "payload": {"query": query, "query_id": query_id}},
+    )
+    response.raise_for_status()
+    result = response.json()
+    if not isinstance(result, dict):
+        raise ValueError("execution response must be a JSON object")
+    return result
+
+
 def aggregate_subtask_results(
     query: str, subtask_results: List[Dict[str, Any]]
 ) -> Dict[str, Any]:
@@ -200,6 +217,11 @@ def aggregate_subtask_results(
         "results_in_subtask_order": [
             result.get("result") for result in subtask_results if result["status"] == "completed"
         ],
+        "answer": "\n\n".join(
+            item["result"].get("result", {}).get("answer", "")
+            for item in subtask_results
+            if item["status"] == "completed"
+        ).strip(),
     }
 
 
@@ -235,10 +257,15 @@ async def query(request: QueryRequest) -> dict:
             _probe_resource(client, "master", MASTER_URL),
         )
 
-    available_edges = [node for node in edge_results if node["available"]]
-    master_available = master_result["available"]
+    available_edges = [
+        node for node in edge_results
+        if node["available"] and node["resources"].get("llm_available", True)
+    ]
+    master_available = master_result["available"] and master_result["resources"].get("llm_available", True)
     unavailable_nodes = [
-        node["node"] for node in [*edge_results, master_result] if not node["available"]
+        node["node"]
+        for node in [*edge_results, master_result]
+        if not node["available"] or not node["resources"].get("llm_available", True)
     ]
     selected: List[Dict[str, Any]] = []
     decision: Optional[str] = None
@@ -338,6 +365,22 @@ async def query(request: QueryRequest) -> dict:
             "unavailable_nodes": unavailable_nodes,
         }
 
+    try:
+        async with httpx.AsyncClient(timeout=RESOURCE_TIMEOUT_SECONDS) as client:
+            execution = await _execute_node(client, selected[0], query_text, query_id)
+    except (httpx.HTTPError, ValueError) as exc:
+        if selected[0]["node"] != "master" and master_available:
+            fallback = "edge execution failed; routed to master"
+            try:
+                async with httpx.AsyncClient(timeout=RESOURCE_TIMEOUT_SECONDS) as client:
+                    master_execution = await _execute_node(client, master_result, query_text, query_id)
+                execution = master_execution
+                decision = "master-fallback"
+                selected_nodes = ["master"]
+            except (httpx.HTTPError, ValueError) as master_exc:
+                raise HTTPException(status_code=502, detail={"error": "execution failed", "edge_error": type(exc).__name__, "master_error": type(master_exc).__name__}) from master_exc
+        else:
+            raise HTTPException(status_code=502, detail={"error": "execution failed", "node": selected[0]["node"], "last_error": type(exc).__name__}) from exc
     return {
         "query_id": query_id,
         "complexity": complexity,
@@ -348,4 +391,6 @@ async def query(request: QueryRequest) -> dict:
         "unavailable_nodes": unavailable_nodes,
         "fallback": fallback,
         "reason": reason,
+        "execution": execution,
+        "final_result": execution.get("result", execution),
     }

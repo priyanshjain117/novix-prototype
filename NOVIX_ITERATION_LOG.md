@@ -153,7 +153,41 @@ Added the final AI execution layer to the existing master service without adding
 - Real mode validates the API key configuration, provider response shape, and non-empty output.
 - Compose build/start verification is performed as part of this iteration.
 
-## Iteration 7 — Ollama-backed edge execution
+## Iteration 7 — Real edge and routed execution
+
+### Scope
+
+Completed end-to-end execution for local, distributed, and master routes. Edge nodes now call local Ollama in real mode. Mock mode remains explicit and offline.
+
+### Algorithms and techniques
+
+- Edge `/execute` validates query input and calls Ollama `/api/chat` with `stream: false`.
+- Router filters nodes by reported LLM availability and ranks edges by CPU/RAM load.
+- Local and master routes now dispatch execution and return the actual result.
+- Distributed subtasks execute concurrently and aggregate ordered answers.
+- Edge execution failure falls back to master when master is available.
+- Real mode raises errors. It never substitutes mock output.
+
+### Components
+
+- `app/llm_service.py`
+- `app/edge_service.py`
+- `app/master_service.py`
+- `app/router_service.py`
+- `docker-compose.yml`
+- `.env.example`
+- `dashboard/app.js`
+- `README.md`
+
+### Validation
+
+- Python compilation passed.
+- Docker Compose configuration passed.
+- Runtime mock execution, routing, fallback, and LLM failure checks are blocked because host lacks Python dependencies.
+- Docker startup is blocked because Docker is unavailable in this environment.
+- Live Ollama and live OpenAI-compatible inference require external runtimes and credentials.
+
+## Iteration 8 — Ollama-backed edge execution
 
 ### Scope
 

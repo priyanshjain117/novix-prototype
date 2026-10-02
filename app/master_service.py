@@ -1,6 +1,7 @@
 import asyncio
 import json
 import logging
+import os
 from datetime import datetime, timezone
 from typing import Any, Dict
 from uuid import uuid4
@@ -44,11 +45,14 @@ def health() -> dict:
 
 @app.get("/resources")
 def resources() -> dict:
+    mode = llm_mode()
     return {
         "service": "master",
         "role": "coordination",
         "capacity": {"status": "available"},
-        "llm_mode": llm_mode(),
+        "llm_mode": mode,
+        "llm_model": os.getenv("LLM_MODEL", "gpt-4o-mini"),
+        "llm_available": mode == "mock" or (mode == "real" and bool(os.getenv("LLM_API_KEY", "").strip())),
     }
 
 

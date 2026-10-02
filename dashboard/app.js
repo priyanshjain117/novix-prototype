@@ -138,7 +138,8 @@ async function executeQuery(event) {
     $("#query-id").textContent = data.query_id || "";
     renderRouting(data);
     renderExecution(data);
-    $("#final-response").textContent = JSON.stringify(data.final_result || data, null, 2);
+    const response = data.final_result || data.execution?.result || data;
+    $("#final-response").textContent = response.answer || JSON.stringify(response, null, 2);
     $("#result-status").textContent = data.final_result?.status || "Complete";
     setSystemStatus("System ready", "ok");
   } catch (error) {

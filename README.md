@@ -1,22 +1,52 @@
 # NOVIX Prototype Backend
 
-Minimal Python + FastAPI services for the NOVIX prototype. The services are intentionally independent and use in-memory placeholder behavior.
+Python + FastAPI prototype for routing queries across local edge LLMs and a master OpenAI-compatible LLM.
 
 Implementation algorithms and techniques for each project iteration are tracked in [NOVIX_ITERATION_LOG.md](NOVIX_ITERATION_LOG.md).
 
+## Contents
+
+- [Services](#services)
+- [Routing logic](#routing-logic)
+- [Execution flow](#execution-flow)
+- [Setup](#setup)
+- [Run](#run)
+- [Tests](#tests)
+- [Run with Docker Compose](#run-with-docker-compose)
+- [Example requests](#example-requests)
+- [Validation status](#validation-status)
+
 ## Services
 
-- Router: `POST /query` — classifies queries and routes them using live node resources.
-- Edge: `GET /health`, `GET /resources`, `POST /execute` — reports host CPU and memory using `psutil`. Execution runs through `EDGE_LLM_MODE`: `mock` (default, deterministic, no model needed) or `ollama` (calls a configured Ollama endpoint).
-- Master: `GET /health`, `GET /resources`, `POST /execute` — validates and executes queries through the final AI layer.
+| Service | Endpoints | Role |
+| --- | --- | --- |
+| Router | `POST /query` | Classifies queries and routes them using live node resources. |
+| Edge | `GET /health`, `GET /resources`, `POST /execute` | Reports host CPU/memory via `psutil`. Executes through `EDGE_LLM_MODE`: `mock` (default, deterministic, no model needed) or `ollama` (calls a configured Ollama endpoint). |
+| Master | `GET /health`, `GET /resources`, `POST /execute` | Validates and executes queries through the final AI layer. |
 
-The router uses deterministic keyword and query-length rules (no LLM) to classify requests as `low`, `medium`, or `high`. Low-complexity requests go to the least-loaded available edge, medium parallelizable requests use both edges when available, and high or non-parallelizable requests go to master. Every routing decision probes `/resources` first and reports unavailable nodes or degraded fallbacks.
+## Routing logic
 
-For a medium parallelizable query, the router splits the request into two deterministic subtasks, sends them concurrently to `edge-01` and `edge-02`, and returns `routing_decision`, `nodes_used`, `subtask_results`, and `final_result`.
+The router uses deterministic keyword and query-length rules (no extra routing model) to classify requests as `low`, `medium`, or `high`:
 
-The master execution flow is: input validation → up to two retries → per-attempt timeout → LLM call → output validation. `LLM_MODE=mock` is deterministic and requires no API key. `LLM_MODE=real` uses the configured OpenAI-compatible chat-completions endpoint.
+- **Low** — executes on the least-loaded edge.
+- **Medium** (parallelizable) — splits into two deterministic subtasks, sent concurrently to two available edges; returns real LLM outputs plus an ordered aggregate.
+- **High** (or indivisible) — executes on master.
 
-The edge execution flow follows the same shape: input validation → up to two retries → per-attempt timeout → LLM call → output validation. `EDGE_LLM_MODE=mock` (default) is deterministic and requires no model — it makes no HTTP call and returns a fixed `f"Mock edge response for: {query}"` string. `EDGE_LLM_MODE=ollama` calls `OLLAMA_URL` (an Ollama `/api/chat` endpoint); permanent failures (bad config, missing model, malformed response) are not retried, while connection errors, timeouts, and 5xx responses are retried up to twice. Each edge independently selects mock or Ollama execution — query subtasks sent to different edges may therefore be answered by different, independently running models; this is not single-model distributed inference.
+Resource probes include CPU, RAM, and LLM availability. If an edge execution fails, the router retries the query on master when available.
+
+## Execution flow
+
+**Master** — input validation → up to two retries → per-attempt timeout → LLM call → output validation.
+
+- `LLM_MODE=mock` — deterministic, no API key required.
+- `LLM_MODE=real` — calls the configured OpenAI-compatible chat-completions endpoint.
+
+**Edge** — the same shape: input validation → up to two retries → per-attempt timeout → LLM call → output validation.
+
+- `EDGE_LLM_MODE=mock` (default) — deterministic, no HTTP call, returns a fixed `f"Mock edge response for: {query}"` string.
+- `EDGE_LLM_MODE=ollama` — calls `OLLAMA_URL`'s `/api/chat` endpoint. Permanent failures (bad config, missing model, malformed response) are not retried; connection errors, timeouts, and 5xx responses are retried up to twice.
+
+Each edge independently selects mock or Ollama execution, so subtasks sent to different edges may be answered by different, independently running models — this is not single-model distributed inference. Real mode never falls back to mock output.
 
 ## Setup
 
@@ -26,7 +56,7 @@ source .venv/bin/activate
 pip install -r requirements.txt
 ```
 
-For local configuration, copy `.env.example` to `.env`. The default mock mode works without credentials:
+Copy `.env.example` to `.env` for local configuration. The default mock mode works without credentials:
 
 ```bash
 cp .env.example .env
@@ -39,7 +69,8 @@ Run each service in a separate terminal from the project root:
 ```bash
 uvicorn app.router_service:app --reload --port 8000
 uvicorn app.edge_service:app --reload --port 8001
-uvicorn app.master_service:app --reload --port 8002
+uvicorn app.edge_service:app --reload --port 8002
+uvicorn app.master_service:app --reload --port 8003
 ```
 
 Interactive API documentation is available at `/docs` for each service.
@@ -62,31 +93,48 @@ Docker Compose starts the router, two edge nodes, and the master on the shared `
 docker compose up --build
 ```
 
-Compose reads `.env` automatically. To use a real LLM, set `LLM_MODE=real` and provide `LLM_API_KEY` in `.env`; keep the default `LLM_MODE=mock` for an offline demo.
+Compose reads `.env` automatically. Mock mode runs fully offline.
 
-To use Ollama on the edges instead of mock execution:
+### Real mode (master)
+
+For master to call a real OpenAI-compatible endpoint:
+
+```bash
+cp .env.example .env
+# Set LLM_MODE=real and LLM_API_KEY in .env.
+docker compose up --build
+```
+
+### Ollama mode (edges)
+
+The `ollama` service is opt-in via a Compose profile, so the default `docker compose up --build` flow is unchanged and keeps working offline.
 
 ```bash
 docker compose --profile ollama up -d ollama
 docker compose exec ollama ollama pull llama3.2
 ```
 
-The model is **not** downloaded automatically — the `ollama pull` step above is required before the edges can serve real responses. Then set in `.env`:
+> The model is **not** downloaded automatically — the `ollama pull` step above is required before the edges can serve real responses.
+
+Then set in `.env`:
 
 ```bash
 EDGE_LLM_MODE=ollama
 OLLAMA_MODEL=llama3.2
 ```
 
-and restart the edge containers (`docker compose up -d edge-01 edge-02`). The `ollama` service is opt-in via Docker Compose profiles so the default `docker compose up --build` flow is unchanged and keeps working offline.
+and restart the edge containers:
 
-Container-to-container addresses are:
+```bash
+docker compose up -d edge-01 edge-02
+```
 
-- Router: `http://router:8000`
-- Edge nodes: `http://edge-01:8000`, `http://edge-02:8000`
-- Master: `http://master:8000`
+### Container addresses
 
-From the host, the services are available on ports `8000` (router), `8001` (edge-01), `8002` (edge-02), and `8003` (master).
+| From | Router | Edge nodes | Master |
+| --- | --- | --- | --- |
+| Container-to-container | `http://router:8000` | `http://edge-01:8000`, `http://edge-02:8000` | `http://master:8000` |
+| From host | `:8000` | `:8001`, `:8002` | `:8003` |
 
 ## Example requests
 
@@ -108,3 +156,7 @@ curl -X POST http://localhost:8003/execute \
 ```
 
 No Kubernetes, Redis, Kafka, Celery, or cloud deployment configuration is included.
+
+## Validation status
+
+Python compilation and Compose configuration pass locally. Runtime mock execution, routing, fallback, LLM failure, Docker startup, Ollama inference, and OpenAI-compatible inference remain unverified without dependencies, Docker, runtimes, or credentials.

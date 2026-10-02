@@ -16,6 +16,7 @@ from .edge_llm_service import (
     EdgeLLMOutput,
     EdgeLLMPermanentError,
     edge_llm_mode,
+    edge_llm_model,
     edge_llm_timeout_seconds,
     generate_response,
 )
@@ -61,6 +62,9 @@ def resources() -> dict:
             "used_bytes": memory.used,
             "percent": memory.percent,
         },
+        "llm_mode": edge_llm_mode(),
+        "llm_model": edge_llm_model() if edge_llm_mode() == "ollama" else "novix-edge-mock",
+        "llm_available": edge_llm_mode() == "mock" or (edge_llm_mode() == "ollama" and bool(edge_llm_model())),
     }
 
 
