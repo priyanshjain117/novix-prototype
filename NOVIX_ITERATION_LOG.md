@@ -153,6 +153,82 @@ Added the final AI execution layer to the existing master service without adding
 - Real mode validates the API key configuration, provider response shape, and non-empty output.
 - Compose build/start verification is performed as part of this iteration.
 
+## Iteration 7 — Ollama-backed edge execution
+
+### Scope
+
+Replaced the edge `/execute` placeholder (which only echoed the task back) with
+genuine task execution, with an opt-in Ollama backend alongside the existing
+deterministic mock mode. Router and master services were not modified.
+Independent edge nodes may run independent models — this iteration does not
+implement distributed inference of a single model across edges.
+
+### Algorithms and techniques
+
+- Mirrored the master's existing pipeline shape on the edge: input validation
+  → bounded retries → per-attempt timeout → LLM call → Pydantic output
+  validation (`app/edge_llm_service.py`, `app/edge_service.py`).
+- `EDGE_LLM_MODE=mock` (default, unchanged offline behavior, deterministic,
+  no model required) vs. `EDGE_LLM_MODE=ollama` (HTTP call to a configured
+  Ollama `/api/chat` endpoint via `httpx.AsyncClient` with an explicit
+  timeout).
+- Error classification into retryable vs. permanent failures:
+  `EdgeLLMError` (connection errors, timeouts, 5xx — retried up to
+  `MAX_RETRIES=2` times, matching the master's constant) and
+  `EdgeLLMPermanentError` (bad `EDGE_LLM_MODE`/`OLLAMA_URL` config, HTTP 404
+  for a model not pulled on the Ollama host, other 4xx, malformed/empty
+  response — never retried).
+- `/execute` response contract change: `status` now reports `"completed"` on
+  success (was `"accepted"`); the placeholder `"message"` field was removed;
+  new `result` (the generated answer plus `mode`/`model`) and `attempts`
+  fields were added. `task`, `service`, `node_id`, `payload`, `executed_at`
+  are unchanged. On exhausted retries, returns HTTP 502 with
+  `{"error","request_id","node_id","attempts","last_error"}`, mirroring the
+  master's failure contract.
+- Router (`app/router_service.py`) required no changes: `_execute_subtask`
+  already treats the edge response as an opaque dict and only inspects HTTP
+  status, so the contract change above is compatible by construction.
+- `/health` now also reports `llm_mode`; `/resources` is unchanged.
+- Docker Compose: added an `ollama` service gated behind the `ollama` Compose
+  profile (`docker compose --profile ollama up`) so the default
+  `docker compose up --build` flow is unaffected and still works offline.
+  Edge services gained `EDGE_LLM_MODE`/`OLLAMA_URL`/`OLLAMA_MODEL`/
+  `OLLAMA_TIMEOUT_SECONDS` environment variables, all defaulting to mock-mode
+  values. No automatic model pull is performed — the model must be pulled
+  manually (`docker compose exec ollama ollama pull <model>`) before
+  `EDGE_LLM_MODE=ollama` can serve real responses; this is documented in the
+  README, not automated.
+- Tests use `respx` to mock all outbound HTTP calls (no live Ollama/network
+  required), and FastAPI's `TestClient` for route-level tests.
+
+### Components
+
+- `app/edge_llm_service.py` (new)
+- `app/edge_service.py`
+- `.env.example`
+- `docker-compose.yml`
+- `README.md`
+- `requirements.txt` (test-only: `pytest`, `pytest-asyncio`, `respx`)
+- `pytest.ini` (new)
+- `tests/test_edge_llm_service.py` (new)
+- `tests/test_edge_service.py` (new)
+- `tests/test_router_edge_compatibility.py` (new)
+
+### Validation
+
+- `python -m pytest` run locally: **17 passed, 0 failed** — covers mock-mode
+  execution, successful Ollama responses, Ollama timeouts, Ollama
+  unavailability (connection refused), Ollama 5xx, missing-model (404),
+  malformed Ollama responses, invalid `EDGE_LLM_MODE`, retry-then-succeed,
+  permanent-error-no-retry, retries-exhausted, `/health` and `/resources`
+  regressions, oversized-query rejection, and two router-compatibility tests
+  asserting `app/router_service.py`'s `_execute_subtask` still wraps the new
+  edge response shape correctly on both success and failure.
+- Not verified: behavior against a real, running Ollama instance (no network
+  access to pull a model in this environment) and GPU/VRAM-aware scheduling
+  (not implemented — edge resource reporting remains CPU/RAM only, as it was
+  before this iteration).
+
 ## Future iteration template
 
 Append a new section using this format for each future implementation prompt:

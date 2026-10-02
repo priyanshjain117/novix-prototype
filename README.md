@@ -7,7 +7,7 @@ Implementation algorithms and techniques for each project iteration are tracked 
 ## Services
 
 - Router: `POST /query` — classifies queries and routes them using live node resources.
-- Edge: `GET /health`, `GET /resources`, `POST /execute` — reports host CPU and memory using `psutil`.
+- Edge: `GET /health`, `GET /resources`, `POST /execute` — reports host CPU and memory using `psutil`. Execution runs through `EDGE_LLM_MODE`: `mock` (default, deterministic, no model needed) or `ollama` (calls a configured Ollama endpoint).
 - Master: `GET /health`, `GET /resources`, `POST /execute` — validates and executes queries through the final AI layer.
 
 The router uses deterministic keyword and query-length rules (no LLM) to classify requests as `low`, `medium`, or `high`. Low-complexity requests go to the least-loaded available edge, medium parallelizable requests use both edges when available, and high or non-parallelizable requests go to master. Every routing decision probes `/resources` first and reports unavailable nodes or degraded fallbacks.
@@ -15,6 +15,8 @@ The router uses deterministic keyword and query-length rules (no LLM) to classif
 For a medium parallelizable query, the router splits the request into two deterministic subtasks, sends them concurrently to `edge-01` and `edge-02`, and returns `routing_decision`, `nodes_used`, `subtask_results`, and `final_result`.
 
 The master execution flow is: input validation → up to two retries → per-attempt timeout → LLM call → output validation. `LLM_MODE=mock` is deterministic and requires no API key. `LLM_MODE=real` uses the configured OpenAI-compatible chat-completions endpoint.
+
+The edge execution flow follows the same shape: input validation → up to two retries → per-attempt timeout → LLM call → output validation. `EDGE_LLM_MODE=mock` (default) is deterministic and requires no model — it makes no HTTP call and returns a fixed `f"Mock edge response for: {query}"` string. `EDGE_LLM_MODE=ollama` calls `OLLAMA_URL` (an Ollama `/api/chat` endpoint); permanent failures (bad config, missing model, malformed response) are not retried, while connection errors, timeouts, and 5xx responses are retried up to twice. Each edge independently selects mock or Ollama execution — query subtasks sent to different edges may therefore be answered by different, independently running models; this is not single-model distributed inference.
 
 ## Setup
 
@@ -44,6 +46,14 @@ Interactive API documentation is available at `/docs` for each service.
 
 The presentation dashboard is served by the router at [http://localhost:8000/dashboard/](http://localhost:8000/dashboard/). It polls edge/master resources and sends queries to the router API.
 
+## Tests
+
+```bash
+python -m pytest
+```
+
+Tests mock all outbound HTTP calls (via `respx`), so they do not require a live model or network access.
+
 ## Run with Docker Compose
 
 Docker Compose starts the router, two edge nodes, and the master on the shared `novix-network` network:
@@ -53,6 +63,22 @@ docker compose up --build
 ```
 
 Compose reads `.env` automatically. To use a real LLM, set `LLM_MODE=real` and provide `LLM_API_KEY` in `.env`; keep the default `LLM_MODE=mock` for an offline demo.
+
+To use Ollama on the edges instead of mock execution:
+
+```bash
+docker compose --profile ollama up -d ollama
+docker compose exec ollama ollama pull llama3.2
+```
+
+The model is **not** downloaded automatically — the `ollama pull` step above is required before the edges can serve real responses. Then set in `.env`:
+
+```bash
+EDGE_LLM_MODE=ollama
+OLLAMA_MODEL=llama3.2
+```
+
+and restart the edge containers (`docker compose up -d edge-01 edge-02`). The `ollama` service is opt-in via Docker Compose profiles so the default `docker compose up --build` flow is unchanged and keeps working offline.
 
 Container-to-container addresses are:
 

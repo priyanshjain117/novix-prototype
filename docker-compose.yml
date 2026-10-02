@@ -24,6 +24,10 @@ services:
     command: uvicorn app.edge_service:app --host 0.0.0.0 --port 8000
     environment:
       NODE_ID: edge-01
+      EDGE_LLM_MODE: ${EDGE_LLM_MODE:-mock}
+      OLLAMA_URL: ${OLLAMA_URL:-http://ollama:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.2}
+      OLLAMA_TIMEOUT_SECONDS: ${OLLAMA_TIMEOUT_SECONDS:-15}
     ports:
       - "8001:8000"
     networks:
@@ -39,6 +43,10 @@ services:
     command: uvicorn app.edge_service:app --host 0.0.0.0 --port 8000
     environment:
       NODE_ID: edge-02
+      EDGE_LLM_MODE: ${EDGE_LLM_MODE:-mock}
+      OLLAMA_URL: ${OLLAMA_URL:-http://ollama:11434}
+      OLLAMA_MODEL: ${OLLAMA_MODEL:-llama3.2}
+      OLLAMA_TIMEOUT_SECONDS: ${OLLAMA_TIMEOUT_SECONDS:-15}
     ports:
       - "8002:8000"
     networks:
@@ -51,6 +59,17 @@ services:
       interval: 5s
       timeout: 3s
       retries: 10
+
+  ollama:
+    image: ollama/ollama:latest
+    profiles:
+      - ollama
+    volumes:
+      - ollama-data:/root/.ollama
+    ports:
+      - "11434:11434"
+    networks:
+      - novix
 
   master:
     build: .
@@ -75,3 +94,6 @@ services:
 networks:
   novix:
     name: novix-network
+
+volumes:
+  ollama-data:
