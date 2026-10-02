@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>NOVIX | Distributed Query Dashboard</title>
+    <link rel="stylesheet" href="/dashboard/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <header class="header">
+        <div>
+          <p class="eyebrow">NOVIX CONTROL PLANE</p>
+          <h1>Distributed Query Dashboard</h1>
+          <p class="muted">Observe the router, edge nodes, and master in one place.</p>
+        </div>
+        <div id="system-status" class="status-pill pending">Connecting</div>
+      </header>
+
+      <section class="panel query-panel">
+        <form id="query-form">
+          <label for="query-input">Query</label>
+          <div class="query-row">
+            <textarea id="query-input" rows="3" required placeholder="Try: Compare the latency and memory profile of two workloads">Compare the latency and memory profile of two workloads</textarea>
+            <button id="execute-button" type="submit">Execute query</button>
+          </div>
+          <p class="hint">Tip: “compare”, “and”, or “parallel” produces a distributed query.</p>
+        </form>
+      </section>
+
+      <section class="pipeline-panel">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">LIVE FLOW</p>
+            <h2 id="pipeline-title">Query execution</h2>
+          </div>
+          <span id="query-id" class="muted"></span>
+        </div>
+        <div id="pipeline" class="pipeline"></div>
+      </section>
+
+      <section class="section-heading nodes-heading">
+        <div>
+          <p class="eyebrow">NODE TELEMETRY</p>
+          <h2>Resource availability</h2>
+        </div>
+        <button id="refresh-button" class="secondary-button" type="button">Refresh</button>
+      </section>
+      <section class="node-grid">
+        <article id="edge-01-card" class="node-card">
+          <div class="node-card-header"><h3>Edge-01</h3><span class="node-status">Checking</span></div>
+          <div class="metric-row"><span>CPU</span><strong class="cpu-value">—</strong></div>
+          <div class="metric-row"><span>RAM</span><strong class="ram-value">—</strong></div>
+          <div class="load-track"><span class="load-fill"></span></div>
+        </article>
+        <article id="edge-02-card" class="node-card">
+          <div class="node-card-header"><h3>Edge-02</h3><span class="node-status">Checking</span></div>
+          <div class="metric-row"><span>CPU</span><strong class="cpu-value">—</strong></div>
+          <div class="metric-row"><span>RAM</span><strong class="ram-value">—</strong></div>
+          <div class="load-track"><span class="load-fill"></span></div>
+        </article>
+        <article id="master-card" class="node-card master-card">
+          <div class="node-card-header"><h3>Master</h3><span class="node-status">Checking</span></div>
+          <div class="master-copy">Coordination and high-complexity execution</div>
+          <div class="master-state">—</div>
+        </article>
+      </section>
+
+      <section class="results-grid">
+        <article class="panel">
+          <div class="section-heading compact"><h2>Routing decision</h2></div>
+          <div id="routing-decision" class="empty-state">Execute a query to see routing.</div>
+        </article>
+        <article class="panel">
+          <div class="section-heading compact"><h2>Execution steps</h2></div>
+          <div id="execution-steps" class="empty-state">Waiting for a query.</div>
+        </article>
+      </section>
+
+      <section class="panel final-panel">
+        <div class="section-heading compact"><h2>Final response</h2><span id="result-status" class="muted"></span></div>
+        <pre id="final-response" class="response-view">No response yet.</pre>
+      </section>
+    </main>
+    <script src="/dashboard/app.js"></script>
+  </body>
+</html>

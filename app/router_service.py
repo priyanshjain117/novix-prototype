@@ -3,16 +3,21 @@ import json
 import logging
 import os
 import re
+from pathlib import Path
 from typing import Any, Dict, List, Optional
 from uuid import uuid4
 
 import httpx
 from fastapi import FastAPI, HTTPException
+from fastapi.staticfiles import StaticFiles
 
 from .models import QueryRequest
 
 app = FastAPI(title="NOVIX Router Service", version="0.1.0")
 logger = logging.getLogger("novix.router")
+
+DASHBOARD_DIR = Path(__file__).resolve().parent.parent / "dashboard"
+app.mount("/dashboard", StaticFiles(directory=DASHBOARD_DIR, html=True), name="dashboard")
 
 RESOURCE_TIMEOUT_SECONDS = float(os.getenv("RESOURCE_TIMEOUT_SECONDS", "1.5"))
 EDGE_URLS = [
@@ -117,6 +122,87 @@ def _load_score(resource: Dict[str, Any]) -> float:
     return (cpu + memory_percent) / 2
 
 
+def decompose_query(query: str) -> List[str]:
+    """Split a query into two stable subtasks for the two edge nodes."""
+
+    parts = [
+        part.strip(" ,;:.\t")
+        for part in re.split(r"\s+(?:and|also|then|versus|vs)\s+|[.;]\s*", query)
+        if part.strip(" ,;:.\t")
+    ]
+    if len(parts) >= 2:
+        midpoint = (len(parts) + 1) // 2
+        return [" and ".join(parts[:midpoint]), " and ".join(parts[midpoint:])]
+
+    words = query.split()
+    midpoint = max(1, len(words) // 2)
+    return [" ".join(words[:midpoint]), " ".join(words[midpoint:]) or query]
+
+
+async def _execute_subtask(
+    client: httpx.AsyncClient,
+    node: Dict[str, Any],
+    subtask_id: str,
+    subtask: str,
+    query_id: str,
+) -> Dict[str, Any]:
+    try:
+        response = await client.post(
+            f"{node['url']}/execute",
+            json={
+                "task": f"query-subtask-{subtask_id}",
+                "payload": {"query": subtask, "query_id": query_id},
+            },
+        )
+        response.raise_for_status()
+        result = response.json()
+        if not isinstance(result, dict):
+            raise ValueError("execution response must be a JSON object")
+        return {
+            "subtask_id": subtask_id,
+            "node": node["node"],
+            "subtask": subtask,
+            "status": "completed",
+            "result": result,
+        }
+    except (httpx.HTTPError, ValueError) as exc:
+        _structured_log(
+            logging.WARNING,
+            "subtask_execution_failed",
+            query_id=query_id,
+            subtask_id=subtask_id,
+            node=node["node"],
+            error=type(exc).__name__,
+            detail=str(exc),
+        )
+        return {
+            "subtask_id": subtask_id,
+            "node": node["node"],
+            "subtask": subtask,
+            "status": "failed",
+            "error": type(exc).__name__,
+        }
+
+
+def aggregate_subtask_results(
+    query: str, subtask_results: List[Dict[str, Any]]
+) -> Dict[str, Any]:
+    """Create a deterministic aggregate without interpreting the results."""
+
+    completed = [
+        result for result in subtask_results if result["status"] == "completed"
+    ]
+    return {
+        "status": "completed" if len(completed) == len(subtask_results) else "partial",
+        "query": query,
+        "completed_count": len(completed),
+        "total_count": len(subtask_results),
+        "results_in_subtask_order": [
+            result.get("result") for result in subtask_results if result["status"] == "completed"
+        ],
+    }
+
+
 @app.get("/health")
 def health() -> dict:
     return {"status": "ok", "service": "router"}
@@ -214,6 +300,44 @@ async def query(request: QueryRequest) -> dict:
         unavailable_nodes=unavailable_nodes,
         fallback=fallback,
     )
+
+    if decision == "parallel-edge" and len(selected) == 2:
+        subtasks = decompose_query(query_text)
+        async with httpx.AsyncClient(timeout=RESOURCE_TIMEOUT_SECONDS) as client:
+            subtask_results = list(
+                await asyncio.gather(
+                    *[
+                        _execute_subtask(
+                            client,
+                            node,
+                            f"{index + 1:02d}",
+                            subtask,
+                            query_id,
+                        )
+                        for index, (node, subtask) in enumerate(zip(selected, subtasks))
+                    ]
+                )
+            )
+        final_result = aggregate_subtask_results(query_text, subtask_results)
+        _structured_log(
+            logging.INFO,
+            "distributed_query_completed",
+            query_id=query_id,
+            nodes_used=selected_nodes,
+            completed_count=final_result["completed_count"],
+            total_count=final_result["total_count"],
+        )
+        return {
+            "query_id": query_id,
+            "routing_decision": decision,
+            "complexity": complexity,
+            "parallelizable": parallelizable,
+            "nodes_used": selected_nodes,
+            "subtask_results": subtask_results,
+            "final_result": final_result,
+            "unavailable_nodes": unavailable_nodes,
+        }
+
     return {
         "query_id": query_id,
         "complexity": complexity,

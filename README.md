@@ -2,6 +2,8 @@
 
 Minimal Python + FastAPI services for the NOVIX prototype. The services are intentionally independent and use in-memory placeholder behavior.
 
+Implementation algorithms and techniques for each project iteration are tracked in [NOVIX_ITERATION_LOG.md](NOVIX_ITERATION_LOG.md).
+
 ## Services
 
 - Router: `POST /query` — classifies queries and routes them using live node resources.
@@ -9,6 +11,8 @@ Minimal Python + FastAPI services for the NOVIX prototype. The services are inte
 - Master: `GET /health`, `GET /resources`, `POST /execute` — exposes coordination status and placeholder execution.
 
 The router uses deterministic keyword and query-length rules (no LLM) to classify requests as `low`, `medium`, or `high`. Low-complexity requests go to the least-loaded available edge, medium parallelizable requests use both edges when available, and high or non-parallelizable requests go to master. Every routing decision probes `/resources` first and reports unavailable nodes or degraded fallbacks.
+
+For a medium parallelizable query, the router splits the request into two deterministic subtasks, sends them concurrently to `edge-01` and `edge-02`, and returns `routing_decision`, `nodes_used`, `subtask_results`, and `final_result`.
 
 ## Setup
 
@@ -29,6 +33,8 @@ uvicorn app.master_service:app --reload --port 8002
 ```
 
 Interactive API documentation is available at `/docs` for each service.
+
+The presentation dashboard is served by the router at [http://localhost:8000/dashboard/](http://localhost:8000/dashboard/). It polls edge/master resources and sends queries to the router API.
 
 ## Run with Docker Compose
 
