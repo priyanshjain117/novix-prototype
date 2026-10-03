@@ -27,7 +27,7 @@ EDGE_URLS = [
     ).split(",")
     if url.strip()
 ]
-MASTER_URL = os.getenv("MASTER_URL", "http://localhost:8002").rstrip("/")
+MASTER_URL = os.getenv("MASTER_URL", "http://localhost:8003").rstrip("/")
 
 # These rules are intentionally transparent and easy to replace with a model later.
 HIGH_COMPLEXITY_TERMS = {
